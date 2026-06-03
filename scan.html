@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>مسح الباركود</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", Tahoma, sans-serif; background: #111827; color: #fff; min-height: 100vh; direction: rtl; }
+    #app { min-height: 100vh; }
+    .page { min-height: 100vh; display: flex; flex-direction: column; }
+    .header-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; background: #1f2937; border-bottom: 1px solid #374151; position: sticky; top: 0; z-index: 50; }
+    .header-bar h1 { font-size: 1.1rem; color: #22c55e; }
+    .content { flex: 1; padding: 15px; padding-bottom: 80px; }
+    .back-btn { background: #374151; color: #22c55e; border: none; padding: 8px 15px; border-radius: 8px; font-size: 1.1rem; cursor: pointer; }
+    .stats-summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 15px; }
+    .stat-box { background: #1f2937; border-radius: 12px; padding: 15px; text-align: center; }
+    .stat-num { font-size: 1.8rem; font-weight: 700; color: #22c55e; }
+    .stat-label { font-size: 0.8rem; color: #9ca3af; margin-top: 5px; }
+    .menu-grid { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 15px; }
+    .menu-card { background: #1f2937; border-radius: 15px; padding: 25px 15px; text-align: center; cursor: pointer; transition: transform 0.2s; }
+    .menu-card:active { transform: scale(0.97); background: #374151; }
+    .menu-icon { display: block; margin-bottom: 10px; }
+    .menu-text { font-size: 1rem; font-weight: 600; }
+    .scan-btn { background: linear-gradient(135deg, #22c55e, #16a34a); }
+    .card { background: #1f2937; border-radius: 12px; padding: 15px; margin-bottom: 15px; }
+    .card h3 { margin-bottom: 10px; color: #d1d5db; }
+    .card p { margin-bottom: 8px; color: #9ca3af; font-size: 0.95rem; }
+    .action-btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 10px; background: #374151; color: #fff; }
+    .action-btn.danger { background: #dc2626; }
+    .danger-zone { border: 2px solid #dc2626; }
+    .empty { text-align: center; color: #6b7280; padding: 30px; }
+    .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: #22c55e; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; z-index: 200; animation: toastIn 0.3s ease; }
+    .toast.error { background: #ef4444; }
+    @keyframes toastIn { from { bottom: -50px; opacity: 0; } to { bottom: 30px; opacity: 1; } }
+    #reader { width: 100%; height: calc(100dvh - 60px); border: none; }
+    #reader.flash-green { animation: flashGreen 0.3s ease 3; }
+    #reader.flash-red { animation: flashRed 0.3s ease 3; }
+    @keyframes flashGreen { 0%,100% { border-color: #22c55e; } 50% { border-color: #374151; } }
+    @keyframes flashRed { 0%,100% { border-color: #ef4444; } 50% { border-color: #374151; } }
+    .result-box { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+    .result-box.show { display: flex; animation: fadeIn 0.2s ease; }
+    .result-box .result-icon { font-size: 5rem; margin-bottom: 15px; }
+    .result-box .result-text { font-size: 1.8rem; font-weight: 700; text-align: center; }
+    .result-box .result-detail { font-size: 1.2rem; margin-top: 10px; opacity: 0.8; }
+    .result-box.valid { background: rgba(34, 197, 94, 0.97); }
+    .result-box.used { background: rgba(245, 158, 11, 0.97); }
+    .result-box.invalid { background: rgba(239, 68, 68, 0.97); }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    label { display: block; margin: 12px 0 5px; font-weight: 600; color: #d1d5db; }
+    input { width: 100%; padding: 12px; border: 1px solid #374151; border-radius: 8px; background: #111827; color: #fff; font-size: 1rem; }
+    input:focus { outline: none; border-color: #22c55e; }
+    .info-box { background: #1f2937; padding: 15px; border-radius: 10px; margin-top: 15px; }
+    .info-box p { margin-bottom: 5px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    let currentPage = 'home';
+    let html5QrCode = null;
+    let lastScan = 0;
+
+    function navigate(page) { currentPage = page; render(); }
+    function render() {
+      const app = document.getElementById('app');
+      switch (currentPage) {
+        case 'home': app.innerHTML = renderHome(); break;
+        case 'scan': app.innerHTML = renderScan(); startScanner(); break;
+        case 'settings': app.innerHTML = renderSettings(); break;
+        default: app.innerHTML = renderHome();
+      }
+    }
+
+    function renderHome() {
+      const invs = JSON.parse(localStorage.getItem('invitations') || '[]');
+      const used = invs.reduce((s, i) => s + i.used_count, 0);
+      const rem = invs.reduce((s, i) => s + Math.max(i.allowed_count - i.used_count, 0), 0);
+      const codes = invs.length;
+      const guests = invs.reduce((s, i) => s + i.allowed_count, 0);
+      return `
+        <div class="page">
+          <div class="header-bar"><h1>📷 المسح</h1><button class="back-btn" onclick="navigate('settings')">⚙️</button></div>
+          <div class="stats-summary">
+            <div class="stat-box"><div class="stat-num">${codes}</div><div class="stat-label">الأكواد</div></div>
+            <div class="stat-box"><div class="stat-num">${guests}</div><div class="stat-label">المدعوون</div></div>
+            <div class="stat-box"><div class="stat-num">${used}</div><div class="stat-label">دخل</div></div>
+            <div class="stat-box"><div class="stat-num">${rem}</div><div class="stat-label">متبقي</div></div>
+          </div>
+          <div class="menu-grid">
+            <div class="menu-card scan-btn" onclick="navigate('scan')" style="padding:40px 20px">
+              <span class="menu-icon" style="font-size:4rem">📷</span>
+              <span class="menu-text" style="font-size:1.5rem">مسح الباركود</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderScan() {
+      return `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="stopScanner();navigate('home')">←</button>
+            <h1>📷 مسح الباركود</h1>
+            <div></div>
+          </div>
+          <div id="reader"></div>
+          <div id="result" class="result-box">
+            <span class="result-icon"></span>
+            <span class="result-text"></span>
+            <span class="result-detail"></span>
+          </div>
+        </div>
+      `;
+    }
+
+    function startScanner() {
+      setTimeout(async () => {
+        const reader = document.getElementById('reader');
+        if (!reader) return;
+        html5QrCode = new Html5Qrcode('reader');
+        try {
+          await html5QrCode.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 320, height: 320 } }, onScanSuccess);
+        } catch (e) {
+          try {
+            const cams = await Html5Qrcode.getCameras();
+            if (cams.length) await html5QrCode.start({ deviceId: { exact: cams[0].id } }, { fps: 10, qrbox: { width: 320, height: 320 } }, onScanSuccess);
+          } catch (e2) {
+            document.getElementById('reader').innerHTML = `
+              <div style="text-align:center;padding:50px;color:#ef4444">
+                <p style="font-size:3rem;margin-bottom:15px">📷</p>
+                <p>تعذر تشغيل الكاميرا</p>
+                <p style="font-size:0.85rem;color:#9ca3af;margin-top:10px">تأكد من صلاحية الكاميرا</p>
+                <button onclick="stopScanner();navigate('home')" style="margin-top:20px;padding:12px 30px;background:#374151;color:#fff;border:none;border-radius:8px;font-size:1rem;width:auto">← العودة</button>
+              </div>`;
+          }
+        }
+      }, 300);
+    }
+
+    function stopScanner() {
+      if (html5QrCode) { try { html5QrCode.stop().catch(() => {}); } catch(e) {} html5QrCode = null; }
+    }
+
+    function onScanSuccess(text) {
+      if (Date.now() - lastScan < 2500) return;
+      lastScan = Date.now();
+      let code = text;
+      if (text.includes('|')) {
+        text.split('|').forEach(p => { if (p.startsWith('CODE-')) code = p.replace('CODE-', '').replace(/^\d+-/, ''); });
+      }
+      const inv = JSON.parse(localStorage.getItem('invitations') || '[]').find(i => i.code.toUpperCase() === code.trim().toUpperCase());
+      let status = 'INVALID', msg = 'كود غير موجود', det = '';
+      if (inv) {
+        if (inv.used_count >= inv.allowed_count) { status = 'USED'; msg = 'تم الاستخدام الكامل'; det = `(${inv.used_count}/${inv.allowed_count})`; }
+        else {
+          inv.used_count++;
+          const all = JSON.parse(localStorage.getItem('invitations') || '[]');
+          const idx = all.findIndex(i => i.id === inv.id);
+          if (idx >= 0) { all[idx] = inv; localStorage.setItem('invitations', JSON.stringify(all)); }
+          status = 'VALID'; msg = 'صالح'; det = `(${inv.used_count}/${inv.allowed_count})`;
+        }
+      }
+      const box = document.getElementById('result');
+      const reader = document.getElementById('reader');
+      reader.className = status === 'VALID' ? 'flash-green' : 'flash-red';
+      const icon = status === 'VALID' ? '✅' : status === 'USED' ? '⚠️' : '❌';
+      const cls = status === 'VALID' ? 'valid' : status === 'USED' ? 'used' : 'invalid';
+      box.className = 'result-box show ' + cls;
+      box.querySelector('.result-icon').textContent = icon;
+      box.querySelector('.result-text').textContent = msg;
+      box.querySelector('.result-detail').textContent = det;
+      if (navigator.vibrate) navigator.vibrate(status === 'VALID' ? [100] : [200, 100, 200]);
+      try { const c = new (window.AudioContext||window.webkitAudioContext)(), o=c.createOscillator(), g=c.createGain(); o.connect(g); g.connect(c.destination); o.frequency.value=status==='VALID'?1000:400; g.gain.value=0.1; o.start(); o.stop(c.currentTime+(status==='VALID'?0.2:0.4)); } catch(e) {}
+      setTimeout(() => { box.className = 'result-box'; reader.className = ''; }, 3000);
+    }
+
+    function renderSettings() {
+      const invs = JSON.parse(localStorage.getItem('invitations') || '[]');
+      return `
+        <div class="page">
+          <div class="header-bar"><button class="back-btn" onclick="navigate('home')">←</button><h1>⚙️ الإعدادات</h1><div></div></div>
+          <div class="content">
+            <div class="card">
+              <h3>📤 استيراد البيانات</h3>
+              <p>استعادة بيانات من ملف</p>
+              <input type="file" id="importFile" accept=".json" onchange="importData(event)" style="display:none">
+              <button class="action-btn" onclick="document.getElementById('importFile').click()">📤 استيراد</button>
+            </div>
+            <div class="card danger-zone">
+              <h3>⚠️ مسح البيانات</h3>
+              <button class="action-btn danger" onclick="clearAllData()">🗑️ مسح جميع البيانات</button>
+            </div>
+            <div class="info-box">
+              <p>📊 الإحصائيات:</p>
+              <p>الأكواد: ${invs.length}</p>
+              <p>الداخل: ${invs.reduce((s,i) => s + i.used_count, 0)}</p>
+              <p>المتبقي: ${invs.reduce((s,i) => s + Math.max(i.allowed_count - i.used_count, 0), 0)}</p>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function importData(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const r = new FileReader();
+      r.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (data.clients) localStorage.setItem('clients', JSON.stringify(data.clients));
+          if (data.invitations) localStorage.setItem('invitations', JSON.stringify(data.invitations));
+          toast('تم الاستيراد'); render();
+        } catch(e) { toast('خطأ في الملف', true); }
+      };
+      r.readAsText(file);
+      event.target.value = '';
+    }
+
+    function clearAllData() {
+      if (confirm('مسح جميع البيانات؟')) {
+        localStorage.removeItem('clients');
+        localStorage.removeItem('invitations');
+        toast('تم المسح'); render();
+      }
+    }
+
+    function toast(msg, err) {
+      const t = document.createElement('div');
+      t.className = 'toast' + (err ? ' error' : '');
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 2500);
+    }
+
+    render();
+  </script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</body>
+</html>

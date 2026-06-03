@@ -1,0 +1,1140 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>نظام الباركود</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- المحتوى يتحول حسب الصفحة -->
+  </div>
+
+  <script>
+    // ==================== قاعدة البيانات المحلية ====================
+    const DB = {
+      clients: JSON.parse(localStorage.getItem('clients') || '[]'),
+      invitations: JSON.parse(localStorage.getItem('invitations') || '[]'),
+      
+      save() {
+        localStorage.setItem('clients', JSON.stringify(this.clients));
+        localStorage.setItem('invitations', JSON.stringify(this.invitations));
+      },
+      
+      addClient(client) {
+        const id = Date.now();
+        this.clients.push({ id, required_codes: 0, ...client, created_at: new Date().toISOString() });
+        this.save();
+        return id;
+      },
+      
+      updateClient(id, data) {
+        const idx = this.clients.findIndex(c => c.id == id);
+        if (idx >= 0) {
+          this.clients[idx] = { ...this.clients[idx], ...data };
+          this.save();
+          return true;
+        }
+        return false;
+      },
+      
+      deleteClient(id) {
+        this.clients = this.clients.filter(c => c.id != id);
+        this.invitations = this.invitations.filter(i => i.client_id != id);
+        this.save();
+      },
+      
+      addInvitations(client_id, client_name, count, allowed, names = []) {
+        const created = [];
+        const existing = this.invitations.filter(i => i.client_id == client_id);
+        let seq = existing.length > 0 ? Math.max(...existing.map(i => i.seq_number || 0)) : 0;
+        for (let i = 0; i < count; i++) {
+          seq++;
+          const code = generateCode();
+          const inv = {
+            id: Date.now() + i,
+            code,
+            seq_number: seq,
+            client_id,
+            client_name,
+            allowed_count: allowed,
+            used_count: 0,
+            guest_name: names[i] || '',
+            created_at: new Date().toISOString()
+          };
+          this.invitations.push(inv);
+          created.push(inv);
+        }
+        this.save();
+        return created;
+      },
+      
+      updateInvitation(id, data) {
+        const idx = this.invitations.findIndex(i => i.id == id);
+        if (idx >= 0) {
+          this.invitations[idx] = { ...this.invitations[idx], ...data };
+          this.save();
+          return true;
+        }
+        return false;
+      },
+      
+      deleteInvitation(id) {
+        this.invitations = this.invitations.filter(i => i.id != id);
+        this.save();
+      },
+      
+      scan(code) {
+        const inv = this.invitations.find(i => i.code.toUpperCase() === code.toUpperCase());
+        if (!inv) {
+          return { status: 'INVALID', message: 'كود غير موجود' };
+        }
+        if (inv.used_count >= inv.allowed_count) {
+          return { status: 'USED', message: 'تم الاستخدام الكامل', invite: inv };
+        }
+        inv.used_count++;
+        this.save();
+        return { status: 'VALID', message: 'صالح', invite: inv };
+      },
+      
+      getClientStats(clientId) {
+        const invs = this.invitations.filter(i => i.client_id == clientId);
+        const client = this.clients.find(c => c.id == clientId);
+        const used_total = invs.reduce((sum, i) => sum + i.used_count, 0);
+        const extra_guests = invs.reduce((sum, i) => sum + Math.max(i.allowed_count - 1, 0), 0);
+        const required = client?.required_codes || 0;
+        return {
+          client_name: client?.name || 'بدون عميل',
+          required_codes: required,
+          qr_count: invs.length,
+          used_total: used_total,
+          extra_guests: extra_guests,
+          total_guests: required + extra_guests,
+          remaining_guests: Math.max(required + extra_guests - used_total, 0)
+        };
+      },
+      
+      exportData() {
+        return JSON.stringify({ clients: this.clients, invitations: this.invitations }, null, 2);
+      },
+      
+      importData(jsonStr) {
+        try {
+          const data = JSON.parse(jsonStr);
+          if (data.clients) this.clients = data.clients;
+          if (data.invitations) this.invitations = data.invitations;
+          this.save();
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+    };
+    
+    function generateCode() {
+      return Math.random().toString(36).substr(2, 8).toUpperCase();
+    }
+    
+    function codeDisplayText(inv, fallbackSeq) {
+      const seq = inv.seq_number || fallbackSeq || '';
+      return seq ? `${seq}- ${inv.code}` : inv.code;
+    }
+    
+    function codeBarcodeText(inv) {
+      const seq = inv.seq_number ? `${inv.seq_number}-` : '';
+      return `CODE-${seq}${inv.code}|ALLOWED-${inv.allowed_count}`;
+    }
+    
+    // ==================== نظام التوجيه ====================
+    let currentPage = 'home';
+    
+    function navigate(page) {
+      if (!isAdmin() && ['clients','addClient','generate'].includes(page)) {
+        page = 'home';
+      }
+      currentPage = page;
+      render();
+    }
+    
+    function render() {
+      const app = document.getElementById('app');
+      switch (currentPage) {
+        case 'home': app.innerHTML = renderHome(); break;
+        case 'clients': app.innerHTML = renderClients(); break;
+        case 'addClient': app.innerHTML = renderAddClient(); break;
+        case 'generate': app.innerHTML = renderGenerate(); break;
+        case 'scan': app.innerHTML = renderScan(); startScanner(); break;
+        case 'export': app.innerHTML = renderExport(); break;
+        default: app.innerHTML = renderHome();
+      }
+    }
+    
+    // ==================== الصفحة الرئيسية ====================
+    function renderHome() {
+      const totalUsed = DB.invitations.reduce((sum, i) => sum + i.used_count, 0);
+      const remaining = DB.invitations.reduce((sum, i) => sum + Math.max(i.allowed_count - i.used_count, 0), 0);
+      
+      if (!isAdmin()) {
+        const stats = DB.clients.map(c => DB.getClientStats(c.id));
+        const totalCodes = DB.clients.reduce((sum, c) => sum + (c.required_codes || 0), 0);
+        const totalGuests = stats.reduce((sum, s) => sum + s.total_guests, 0);
+        return `
+          <div class="page home">
+            <div class="header-bar">
+              <h1>📷 المسح</h1>
+              <button class="icon-btn" onclick="navigate('export')">⚙️</button>
+            </div>
+            
+            <div class="stats-summary" style="grid-template-columns:repeat(2,1fr)">
+              <div class="stat-box">
+                <div class="stat-num">${totalCodes}</div>
+                <div class="stat-label">الأكواد</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-num">${totalGuests}</div>
+                <div class="stat-label">المدعوون</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-num">${totalUsed}</div>
+                <div class="stat-label">دخل</div>
+              </div>
+              <div class="stat-box">
+                <div class="stat-num">${remaining}</div>
+                <div class="stat-label">متبقي</div>
+              </div>
+            </div>
+            
+            <div class="menu-grid">
+              <div class="menu-card scan-btn" onclick="navigate('scan')" style="grid-column:1/-1;padding:40px 20px">
+                <span class="menu-icon" style="font-size:4rem">📷</span>
+                <span class="menu-text" style="font-size:1.5rem">مسح الباركود</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      const stats = DB.clients.map(c => DB.getClientStats(c.id));
+      const totalCodes = DB.clients.reduce((sum, c) => sum + (c.required_codes || 0), 0);
+      const totalGuests = stats.reduce((sum, s) => sum + s.total_guests, 0);
+      
+      return `
+        <div class="page home">
+          <div class="header-bar">
+            <h1>📋 نظام الباركود</h1>
+            <button class="icon-btn" onclick="navigate('export')">⚙️</button>
+          </div>
+          
+          <div class="stats-summary">
+            <div class="stat-box">
+              <div class="stat-num">${totalCodes}</div>
+              <div class="stat-label">إجمالي الأكواد</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">${totalGuests}</div>
+              <div class="stat-label">إجمالي المدعوين</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">${totalUsed}</div>
+              <div class="stat-label">دخل</div>
+            </div>
+          </div>
+          
+          <div class="menu-grid">
+            <div class="menu-card" onclick="navigate('clients')">
+              <span class="menu-icon">👥</span>
+              <span class="menu-text">العملاء</span>
+            </div>
+            <div class="menu-card" onclick="navigate('addClient')">
+              <span class="menu-icon">➕</span>
+              <span class="menu-text">إضافة عميل</span>
+            </div>
+            <div class="menu-card" onclick="navigate('generate')">
+              <span class="menu-icon">🔗</span>
+              <span class="menu-text">توليد الباركود</span>
+            </div>
+            <div class="menu-card scan-btn" onclick="navigate('scan')">
+              <span class="menu-icon">📷</span>
+              <span class="menu-text">مسح الباركود</span>
+            </div>
+          </div>
+          
+          <div class="clients-preview">
+            <h3>ملخص العملاء</h3>
+            ${stats.length === 0 ? '<p class="empty">لا توجد بيانات</p>' : ''}
+            ${stats.map(s => `
+              <div class="client-stat">
+                <div class="client-name">${s.client_name}</div>
+                <div class="client-info">
+                  <span class="chip">📦 أكواد: ${s.required_codes || s.qr_count}</span>
+                  <span class="chip">👥 مدعو: ${s.total_guests}</span>
+                  <span class="chip used">🚪 داخل: ${s.used_total}</span>
+                  <span class="chip remaining">📊 متبقي: ${s.remaining_guests}</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    // ==================== صفحة العملاء ====================
+    function renderClients() {
+      return `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="navigate('home')">←</button>
+            <h1>👥 العملاء</h1>
+            <button class="icon-btn" onclick="navigate('addClient')">➕</button>
+          </div>
+          
+          <div class="content">
+            ${DB.clients.length === 0 ? '<p class="empty">لا يوجد عملاء</p>' : ''}
+            ${DB.clients.map(c => {
+              const stats = DB.getClientStats(c.id);
+              return `
+                <div class="card client-card">
+                  <div class="card-header">
+                    <h3>${c.name}</h3>
+                    <div class="card-actions">
+                      <button class="sm-btn" onclick="showClientMenu(${c.id})">⋮</button>
+                    </div>
+                  </div>
+                  <div class="card-body">
+                    <p>📱 ${c.phone || '-'}</p>
+                    <p>📝 ${c.notes || '-'}</p>
+                    <div class="card-stats">
+                      <span class="chip">📦 أكواد: ${stats.required_codes || stats.qr_count}</span>
+                      <span class="chip">👥 مدعو: ${stats.total_guests}</span>
+                      <span class="chip used">🚪 داخل: ${stats.used_total}</span>
+                      <span class="chip remaining">📊 متبقي: ${stats.remaining_guests}</span>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    function showClientMenu(id) {
+      const client = DB.clients.find(c => c.id == id);
+      const stats = DB.getClientStats(id);
+      
+      document.getElementById('app').innerHTML = `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="navigate('clients')">←</button>
+            <h1>${client.name}</h1>
+            <div></div>
+          </div>
+          
+          <div class="content">
+            <div class="card">
+              <button class="action-btn" onclick="generateForClient(${id})">
+                🔗 توليد باركود
+              </button>
+              <button class="action-btn" onclick="editClient(${id})">
+                ✏️ تعديل
+              </button>
+              <button class="action-btn danger" onclick="deleteClientConfirm(${id})">
+                🗑️ حذف العميل وكل الأكواد
+              </button>
+            </div>
+            
+            <p style="margin: 15px 0 5px">📦 الأكواد: ${stats.required_codes || stats.qr_count} | 👥 المدعوون: ${stats.total_guests} | 🚪 دخل: ${stats.used_total} | 📊 متبقي: ${stats.remaining_guests}</p>
+            <h3 style="margin: 20px 0 10px">الأكواد (${stats.qr_count})</h3>
+            ${renderClientInvitations(id)}
+          </div>
+        </div>
+      `;
+    }
+    
+    function renderClientInvitations(clientId) {
+      const invs = DB.invitations.filter(i => i.client_id == clientId);
+      if (invs.length === 0) return '<p class="empty">لا توجد أكواد</p>';
+      
+      return invs.map((inv, idx) => `
+        <div class="inv-item">
+          <div class="inv-info">
+            <div class="inv-code">${codeDisplayText(inv, idx + 1)}</div>
+            <div class="inv-meta">
+              ${inv.guest_name ? `<span style="color:#22c55e">👤 ${inv.guest_name}</span>` : ''}
+              <span>(${inv.used_count}/${inv.allowed_count})</span>
+              <span class="${inv.used_count >= inv.allowed_count ? 'text-red' : 'text-green'}">
+                ${inv.used_count >= inv.allowed_count ? 'مستخدم' : 'متاح'}
+              </span>
+            </div>
+          </div>
+          <div class="inv-actions">
+            <button class="sm-btn" onclick="showInviteCard(${inv.id})">🎫</button>
+            <button class="sm-btn" onclick="editInvite(${inv.id})">✏️</button>
+            <button class="sm-btn danger" onclick="deleteInviteConfirm(${inv.id})">🗑️</button>
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    // ==================== إضافة عميل ====================
+    function renderAddClient(editId = null) {
+      const client = editId ? DB.clients.find(c => c.id == editId) : null;
+      
+      return `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="navigate('${editId ? 'clients' : 'home'}')">←</button>
+            <h1>${editId ? '✏️ تعديل' : '➕ إضافة'} عميل</h1>
+            <div></div>
+          </div>
+          
+          <div class="content">
+            <div class="card">
+              <label>اسم العميل</label>
+              <input type="text" id="clientName" value="${client?.name || ''}" placeholder="مثال: شركة ألف">
+              
+              <label>رقم الجوال</label>
+              <input type="tel" id="clientPhone" value="${client?.phone || ''}" placeholder="05xxxxxxxx">
+              
+              <label>عدد الأكواد المطلوبة</label>
+              <input type="number" id="clientRequiredCodes" value="${client?.required_codes || ''}" placeholder="عدد الباركودات اللي يطلبها العميل">
+              
+              <label>ملاحظات</label>
+              <input type="text" id="clientNotes" value="${client?.notes || ''}" placeholder="اختياري">
+              
+              <button class="submit-btn" onclick="saveClient(${editId || 'null'})">
+                ${editId ? '💾 تحديث' : '✅ إضافة'}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    
+    function editClient(id) {
+      document.getElementById('app').innerHTML = renderAddClient(id);
+    }
+    
+    function saveClient(editId) {
+      const name = document.getElementById('clientName').value.trim();
+      const phone = document.getElementById('clientPhone').value.trim();
+      const requiredCodes = parseInt(document.getElementById('clientRequiredCodes').value) || 0;
+      const notes = document.getElementById('clientNotes').value.trim();
+      
+      if (!name) {
+        alert('أدخل اسم العميل');
+        return;
+      }
+      
+      if (editId) {
+        DB.updateClient(editId, { name, phone, required_codes: requiredCodes, notes });
+        toast('تم التحديث');
+        navigate('clients');
+      } else {
+        DB.addClient({ name, phone, required_codes: requiredCodes, notes });
+        toast('تم الإضافة');
+        navigate('home');
+      }
+    }
+    
+    function deleteClientConfirm(id) {
+      const client = DB.clients.find(c => c.id == id);
+      if (confirm(`هل تريد حذف العميل "${client.name}" وكل أكواده؟`)) {
+        DB.deleteClient(id);
+        toast('تم الحذف');
+        navigate('clients');
+      }
+    }
+    
+    // ==================== توليد الباركود ====================
+    function renderGenerate(clientId = null) {
+      return `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="navigate('home')">←</button>
+            <h1>🔗 توليد الباركود</h1>
+            <div></div>
+          </div>
+          
+          <div class="content">
+            <div class="card">
+              <label>اختر العميل</label>
+              <select id="genClient" onchange="loadClientInvitations()">
+                <option value="">-- اختر عميل --</option>
+                ${DB.clients.map(c => `<option value="${c.id}" ${c.id == clientId ? 'selected' : ''}>${c.name}</option>`).join('')}
+              </select>
+              
+              <label>عدد الأكواد</label>
+              <input type="number" id="genCount" value="1" min="1" max="500">
+              
+              <label>عدد المدعوين لكل كود</label>
+              <input type="number" id="genAllowed" value="1" min="1" max="100">
+              
+              <label>أسماء المدعوين (اختياري)</label>
+              <textarea id="genNames" rows="4" placeholder="اكتب اسم كل مدعو في سطر، أو اتركه فارغاً"></textarea>
+<p style="font-size:0.8rem;color:#9ca3af;margin-top:3px">عدد الأسماء يجب أن يساوي عدد الأكواد</p>
+              
+              <button class="submit-btn" onclick="generateCodes()">
+                🔗 توليد
+              </button>
+            </div>
+            
+            <div id="generatedCodes"></div>
+            <div id="clientInvitations"></div>
+          </div>
+        </div>
+      `;
+    }
+    
+    function generateForClient(clientId) {
+      document.getElementById('app').innerHTML = renderGenerate(clientId);
+    }
+    
+    let isGenerating = false;
+    
+    function generateCodes() {
+      if (isGenerating) return;
+      
+      const clientId = parseInt(document.getElementById('genClient').value);
+      const count = parseInt(document.getElementById('genCount').value) || 10;
+      const allowed = parseInt(document.getElementById('genAllowed').value) || 1;
+      
+      if (!clientId) {
+        alert('اختر عميل أولاً');
+        return;
+      }
+      
+      const namesText = document.getElementById('genNames').value.trim();
+      const names = namesText ? namesText.split('\n').map(n => n.trim()).filter(n => n) : [];
+      
+      if (names.length > 0 && names.length !== count) {
+        alert(`عدد الأسماء (${names.length}) لا يساوي عدد الأكواد (${count})`);
+        return;
+      }
+      
+      if (!confirm(`تأكيد توليد ${count} باركود للعميل "${DB.clients.find(c => c.id == clientId)?.name}"؟`)) return;
+      isGenerating = true;
+      
+      const client = DB.clients.find(c => c.id == clientId);
+      const created = DB.addInvitations(clientId, client.name, count, allowed, names);
+      
+      toast(`تم توليد ${created.length} باركود`);
+      document.getElementById('genCount').value = 1;
+      document.getElementById('genAllowed').value = 1;
+      document.getElementById('genNames').value = '';
+      loadClientInvitations();
+      showGeneratedCodes(created);
+      
+      setTimeout(() => { isGenerating = false; }, 1000);
+    }
+    
+    function showGeneratedCodes(codes) {
+      const container = document.getElementById('generatedCodes');
+      container.innerHTML = `
+        <h3 style="margin: 20px 0 10px">الأكواد الجديدة (${codes.length})</h3>
+        <button class="print-btn" onclick="printCodes()">🖨️ طباعة الكل</button>
+        <div class="codes-grid" id="codesGrid"></div>
+      `;
+      
+      const grid = document.getElementById('codesGrid');
+      codes.forEach((code, idx) => {
+        const text = codeBarcodeText(code);
+        grid.innerHTML += `
+          <div class="code-item">
+            <div class="qr" data-text="${text}"></div>
+            <div class="code-text">${codeDisplayText(code, idx + 1)}</div>
+            ${code.guest_name ? `<div class="code-meta" style="color:#22c55e">👤 ${code.guest_name}</div>` : ''}
+            <div class="code-meta">(${code.used_count}/${code.allowed_count})</div>
+          </div>
+        `;
+      });
+      
+      setTimeout(generateQRCodes, 100);
+    }
+    
+    function loadClientInvitations() {
+      const clientId = parseInt(document.getElementById('genClient')?.value);
+      if (!clientId) return;
+      
+      const invs = DB.invitations.filter(i => i.client_id == clientId);
+      const container = document.getElementById('clientInvitations');
+      
+      if (invs.length === 0) {
+        container.innerHTML = '<p class="empty" style="margin-top:20px">لا توجد أكواد</p>';
+        return;
+      }
+      
+      container.innerHTML = `
+        <h3 style="margin: 20px 0 10px">الأكواد الموجودة (${invs.length})</h3>
+        ${invs.map((inv, idx) => `
+          <div class="inv-item">
+            <div class="inv-info">
+              <div class="inv-code">${codeDisplayText(inv, idx + 1)}</div>
+              <div class="inv-meta">
+                ${inv.guest_name ? `<span style="color:#22c55e">👤 ${inv.guest_name}</span>` : ''}
+                <span>(${inv.used_count}/${inv.allowed_count})</span>
+              </div>
+            </div>
+            <div class="inv-actions">
+              <button class="sm-btn" onclick="editInvite(${inv.id})">✏️</button>
+              <button class="sm-btn danger" onclick="deleteInviteConfirm(${inv.id})">🗑️</button>
+            </div>
+          </div>
+        `).join('')}
+      `;
+    }
+    
+    function showInviteCard(id) {
+      const inv = DB.invitations.find(i => i.id == id);
+      if (!inv) return;
+      
+      document.getElementById('app').innerHTML = `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="showClientMenu(${inv.client_id})">←</button>
+            <h1>🎫 بطاقة دعوة</h1>
+            <button class="icon-btn" onclick="printInviteCard()">🖨️</button>
+          </div>
+          
+          <div class="content" id="inviteCardContent">
+            <div style="text-align:center;margin-bottom:15px">
+              <label style="display:inline;margin:0">اسم المدعو:</label>
+              <input type="text" id="guestNameInput" value="${inv.guest_name || ''}" placeholder="اسم المدعو" style="width:auto;display:inline-block;padding:8px;margin:5px">
+              <button class="sm-btn" onclick="saveGuestName(${inv.id})">💾 حفظ</button>
+            </div>
+            <div id="inviteCard" style="text-align:center"></div>
+          </div>
+        </div>
+      `;
+      
+      renderCardCanvas(inv);
+    }
+    
+    function saveGuestName(id) {
+      const name = document.getElementById('guestNameInput').value.trim();
+      DB.updateInvitation(id, { guest_name: name });
+      toast('تم حفظ الاسم');
+      const inv = DB.invitations.find(i => i.id == id);
+      renderCardCanvas(inv);
+    }
+    
+    function renderCardCanvas(inv) {
+      const container = document.getElementById('inviteCard');
+      if (!container) return;
+      
+      const settings = getCardSettings();
+      const isMobile = window.innerWidth < 500;
+      const W = isMobile ? 400 : 800;
+      const H = Math.round(W * 1.5);
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      canvas.style.borderRadius = '12px';
+      canvas.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)';
+      
+      container.innerHTML = '';
+      container.appendChild(canvas);
+      
+      const ctx = canvas.getContext('2d');
+      const bgSrc = localStorage.getItem('cardImage');
+      
+      function drawCard(bgImg) {
+        if (bgImg) {
+          ctx.drawImage(bgImg, 0, 0, W, H);
+        } else {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, W, H);
+        }
+        
+        const qrSize = Math.round(W * 0.5);
+        const qrX = (W - qrSize) / 2;
+        const qrY = Math.round(H * 0.75 - qrSize / 2);
+        
+        const tmp = document.createElement('div');
+        tmp.style.cssText = 'position:absolute;left:-9999px';
+        document.body.appendChild(tmp);
+        const qrInstance = new QRCode(tmp, {
+          text: codeBarcodeText(inv),
+          width: qrSize,
+          height: qrSize,
+          colorDark: settings.qrColor,
+          colorLight: '#ffffff'
+        });
+        
+        const model = qrInstance._oQRCode || Object.values(qrInstance).find(v => v && typeof v.getModuleCount === 'function');
+        if (model) {
+          const count = model.getModuleCount();
+          const cellSize = qrSize / (count + 8);
+          const margin = Math.round(4 * cellSize);
+          for (let row = 0; row < count; row++) {
+            for (let col = 0; col < count; col++) {
+              if (model.isDark(row, col)) {
+                ctx.fillStyle = settings.qrColor;
+                ctx.fillRect(qrX + margin + col * cellSize, qrY + margin + row * cellSize, Math.ceil(cellSize), Math.ceil(cellSize));
+              }
+            }
+          }
+        }
+        document.body.removeChild(tmp);
+        
+        const fontSize = Math.round(W * 0.05);
+        if (inv.guest_name) {
+          ctx.fillStyle = settings.fontColor;
+          ctx.textAlign = 'center';
+          ctx.font = `bold ${fontSize}px ${settings.fontFamily}`;
+          ctx.fillText(inv.guest_name, W/2, qrY - Math.round(fontSize * 0.5));
+        }
+        
+        ctx.fillStyle = settings.fontColor;
+        ctx.textAlign = 'center';
+        ctx.font = `bold ${Math.round(fontSize * 0.7)}px monospace`;
+        ctx.fillText(codeDisplayText(inv), W/2, qrY + qrSize + Math.round(fontSize * 0.6));
+      }
+      
+      if (bgSrc) {
+        const img = new Image();
+        img.onload = () => drawCard(img);
+        img.onerror = () => drawCard(null);
+        img.src = bgSrc;
+      } else {
+        drawCard(null);
+      }
+    }
+    
+    function printInviteCard() {
+      const canvas = document.querySelector('#inviteCard canvas');
+      if (!canvas) return;
+      
+      const printWin = window.open('', '_blank');
+      printWin.document.write(`
+        <html>
+        <head>
+          <style>
+            body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #fff; }
+            img { max-width: 100%; height: auto; }
+            @media print {
+              body { margin: 0; }
+              img { max-width: 100%; }
+            }
+          </style>
+        </head>
+        <body>
+          <img src="${canvas.toDataURL('image/png')}" />
+          <script>window.print();<\\/script>
+        </body>
+        </html>
+      `);
+      printWin.document.close();
+    }
+    
+    function editInvite(id) {
+      const inv = DB.invitations.find(i => i.id == id);
+      const name = prompt('اسم المدعو:', inv.guest_name || '');
+      if (name !== null) {
+        DB.updateInvitation(id, { guest_name: name.trim() });
+        toast('تم التحديث');
+        showClientMenu(inv.client_id);
+      }
+    }
+    
+    function deleteInviteConfirm(id) {
+      if (confirm('حذف هذا الكود؟')) {
+        const inv = DB.invitations.find(i => i.id == id);
+        DB.deleteInvitation(id);
+        toast('تم الحذف');
+        showClientMenu(inv.client_id);
+      }
+    }
+    
+    // ==================== مسح الباركود ====================
+    function renderScan() {
+      return `
+        <div class="page scan-page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="stopScanner(); navigate('home')">←</button>
+            <h1>📷 مسح الباركود</h1>
+            <div></div>
+          </div>
+          
+          <div id="reader"></div>
+          
+          <div id="result" class="result-box">
+            <span class="result-icon"></span>
+            <span class="result-text"></span>
+            <span class="result-detail"></span>
+          </div>
+        </div>
+      `;
+    }
+    
+    let html5QrCode = null;
+    
+    function startScanner() {
+      setTimeout(async () => {
+        const reader = document.getElementById('reader');
+        if (!reader) return;
+        
+        html5QrCode = new Html5Qrcode("reader");
+        try {
+          await html5QrCode.start(
+            { facingMode: "environment" },
+            { fps: 10, qrbox: { width: 320, height: 320 } },
+            onScanSuccess
+          );
+        } catch (e) {
+          try {
+            const cameras = await Html5Qrcode.getCameras();
+            if (cameras.length > 0) {
+              await html5QrCode.start(
+                { deviceId: { exact: cameras[0].id } },
+                { fps: 10, qrbox: { width: 320, height: 320 } },
+                onScanSuccess
+              );
+            }
+          } catch (e2) {
+            document.getElementById("reader").innerHTML = `
+              <div style="text-align:center;padding:50px;color:#ef4444">
+                <p style="font-size:3rem;margin-bottom:15px">📷</p>
+                <p>تعذر تشغيل الكاميرا</p>
+                <p style="font-size:0.85rem;color:#9ca3af;margin-top:10px">تأكد من صلاحية الكاميرا</p>
+                <button onclick="stopScanner();navigate('home')" style="margin-top:20px;padding:12px 30px;background:#374151;color:#fff;border:none;border-radius:8px;font-size:1rem;width:auto">← العودة</button>
+              </div>
+            `;
+          }
+        }
+      }, 300);
+    }
+    
+    function stopScanner() {
+      if (html5QrCode) {
+        try { html5QrCode.stop().catch(() => {}); } catch(e) {}
+        html5QrCode = null;
+      }
+    }
+    
+    let lastScan = 0;
+    
+    function onScanSuccess(text) {
+      if (Date.now() - lastScan < 2500) return;
+      lastScan = Date.now();
+      
+      // استخراج الكود من الباركود (يدعم CODE-1-XXXXX و CODE-XXXXX)
+      let code = text;
+      if (text.includes('|')) {
+        const parts = text.split('|');
+        parts.forEach(p => {
+          if (p.startsWith('CODE-')) code = p.replace('CODE-', '').replace(/^\d+-/, '');
+        });
+      }
+      
+      const result = DB.scan(code.trim());
+      showScanResult(result);
+    }
+    
+    function showScanResult(result) {
+      const reader = document.getElementById("reader");
+      const resultBox = document.getElementById("result");
+      
+      reader.className = result.status === 'VALID' ? 'flash-green' : 'flash-red';
+      
+      const icon = result.status === 'VALID' ? '✅' : result.status === 'USED' ? '⚠️' : '❌';
+      const statusClass = result.status === 'VALID' ? 'valid' : result.status === 'USED' ? 'used' : 'invalid';
+      
+      resultBox.className = 'result-box show ' + statusClass;
+      resultBox.querySelector('.result-icon').textContent = icon;
+      resultBox.querySelector('.result-text').textContent = result.message;
+      resultBox.querySelector('.result-detail').textContent = result.invite 
+        ? `(${result.invite.used_count}/${result.invite.allowed_count})` : '';
+      
+      // اهتزاز وصوت
+      if (navigator.vibrate) {
+        navigator.vibrate(result.status === 'VALID' ? [100] : [200, 100, 200]);
+      }
+      playBeep(result.status === 'VALID');
+      
+      // إخفاء بعد 3 ثواني
+      setTimeout(() => {
+        resultBox.className = 'result-box';
+        reader.className = '';
+      }, 3000);
+    }
+    
+    function playBeep(success) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = success ? 1000 : 400;
+        gain.gain.value = 0.1;
+        osc.start();
+        osc.stop(ctx.currentTime + (success ? 0.2 : 0.4));
+      } catch (e) {}
+    }
+    
+    // ==================== التصدير والاستيراد ====================
+    function renderExport() {
+      if (!isAdmin()) {
+        return `
+          <div class="page">
+            <div class="header-bar">
+              <button class="back-btn" onclick="navigate('home')">←</button>
+              <h1>⚙️ الإعدادات</h1>
+              <div></div>
+            </div>
+            
+            <div class="content">
+              <div class="card">
+                <h3>📤 استيراد البيانات</h3>
+                <p>استعادة بيانات من ملف</p>
+                <input type="file" id="importFile" accept=".json" onchange="importData(event)" style="display:none">
+                <button class="action-btn" onclick="document.getElementById('importFile').click()">📤 استيراد</button>
+              </div>
+              
+              <div class="card danger-zone">
+                <h3>⚠️ مسح البيانات</h3>
+                <button class="action-btn danger" onclick="clearAllData()">🗑️ مسح جميع البيانات</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="navigate('home')">←</button>
+            <h1>⚙️ الإعدادات</h1>
+            <div></div>
+          </div>
+          
+          <div class="content">
+            <div class="card">
+              <h3>📤 تصدير البيانات</h3>
+              <p>احفظ نسخة من جميع البيانات</p>
+              <button class="action-btn" onclick="exportData()">📥 تصدير</button>
+            </div>
+            
+            <div class="card">
+              <h3>📤 استيراد البيانات</h3>
+              <p>استعادة بيانات من ملف</p>
+              <input type="file" id="importFile" accept=".json" onchange="importData(event)" style="display:none">
+              <button class="action-btn" onclick="document.getElementById('importFile').click()">📤 استيراد</button>
+            </div>
+            
+            <div class="card">
+              <h3>🖼️ تصميم بطاقة الدعوة</h3>
+              <p>ارفع صورة التصميم (يتم وضع الباركود أسفل الصورة تلقائياً)</p>
+              <input type="file" id="cardImageInput" accept="image/*" onchange="uploadCardImage(event)" style="display:none">
+              <button class="action-btn" onclick="document.getElementById('cardImageInput').click()">📤 رفع صورة</button>
+              ${localStorage.getItem('cardImage') ? `
+                <img src="${localStorage.getItem('cardImage')}" class="card-preview" />
+                <button class="action-btn danger" onclick="removeCardImage()">🗑️ حذف الصورة</button>
+              ` : '<p style="color:#9ca3af">لا توجد صورة مرفوعة</p>'}
+            </div>
+            
+            <div class="card">
+              <h3>🎨 تخصيص البطاقة</h3>
+              <label>لون الباركود</label>
+              <input type="color" id="cardQrColor" value="${localStorage.getItem('cardQrColor') || '#000000'}">
+              
+              <label>نوع الخط</label>
+              <select id="cardFont">
+                ${['Arial','Traditional Arabic','Amiri','Cairo','Noto Kufi Arabic','Tahoma','Times New Roman'].map(f => 
+                  `<option value="${f}" ${(localStorage.getItem('cardFont')||'Arial')===f?'selected':''}>${f}</option>`
+                ).join('')}
+              </select>
+              
+              <label>لون النص</label>
+              <input type="color" id="cardFontColor" value="${localStorage.getItem('cardFontColor') || '#1a1a1a'}">
+              
+              <button class="action-btn" onclick="saveCardSettings()">💾 حفظ</button>
+            </div>
+            
+            <div class="card danger-zone">
+              <h3>⚠️ منطقة الخطر</h3>
+              <button class="action-btn danger" onclick="clearAllData()">🗑️ مسح جميع البيانات</button>
+            </div>
+            
+            <div class="card" style="border:2px solid #3b82f6">
+              <h3>🔀 وضع المسح</h3>
+              <p>ارسل الرابط للماسح أو حمّل له ملف <code>scan.html</code></p>
+              <input type="text" readonly value="${window.location.origin + window.location.pathname.replace('index.html','')}scan.html" style="text-align:center;font-size:0.85rem;padding:10px;margin:5px 0" onclick="this.select();navigator.clipboard?.writeText(this.value);toast('تم النسخ')">
+              <button class="action-btn" onclick="toggleMode()" style="background:#3b82f6">📷 وضع المسح</button>
+            </div>
+            
+            <div class="info-box">
+              <p>📊 إحصائيات:</p>
+              <p>العملاء: ${DB.clients.length}</p>
+              <p>الأكواد: ${DB.invitations.length}</p>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    
+    function exportData() {
+      const data = DB.exportData();
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'barcode-data-' + new Date().toISOString().slice(0,10) + '.json';
+      a.click();
+      toast('تم التصدير');
+    }
+    
+    function importData(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        if (DB.importData(e.target.result)) {
+          toast('تم الاستيراد');
+          render();
+        } else {
+          toast('خطأ في الملف', true);
+        }
+      };
+      reader.readAsText(file);
+      event.target.value = '';
+    }
+    
+    function clearAllData() {
+      if (confirm('هل تريد مسح جميع البيانات نهائياً؟')) {
+        localStorage.removeItem('clients');
+        localStorage.removeItem('invitations');
+        DB.clients = [];
+        DB.invitations = [];
+        toast('تم المسح');
+        render();
+      }
+    }
+    
+    function uploadCardImage(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        localStorage.setItem('cardImage', e.target.result);
+        toast('تم رفع الصورة');
+        navigate('export');
+      };
+      reader.readAsDataURL(file);
+    }
+    
+    function removeCardImage() {
+      if (confirm('حذف صورة التصميم؟')) {
+        localStorage.removeItem('cardImage');
+        toast('تم الحذف');
+        navigate('export');
+      }
+    }
+    
+    function getCardSettings() {
+      return {
+        qrColor: localStorage.getItem('cardQrColor') || '#000000',
+        fontFamily: localStorage.getItem('cardFont') || 'Arial',
+        fontColor: localStorage.getItem('cardFontColor') || '#1a1a1a',
+      };
+    }
+    
+    function saveCardSettings() {
+      localStorage.setItem('cardQrColor', document.getElementById('cardQrColor').value);
+      localStorage.setItem('cardFont', document.getElementById('cardFont').value);
+      localStorage.setItem('cardFontColor', document.getElementById('cardFontColor').value);
+      toast('تم الحفظ');
+      navigate('export');
+    }
+    
+    // ==================== وضع المسح (Scanner Mode) ====================
+    function isAdmin() {
+      return localStorage.getItem('appMode') !== 'scanner';
+    }
+    
+    function toggleMode() {
+      if (isAdmin()) {
+        if (confirm('التبديل إلى وضع المسح؟ سيتم إخفاء قوائم الإدارة.')) {
+          localStorage.setItem('appMode', 'scanner');
+          toast('وضع المسح');
+          render();
+        }
+      } else {
+        if (confirm('العودة إلى وضع الإدارة؟')) {
+          localStorage.setItem('appMode', 'admin');
+          toast('وضع الإدارة');
+          render();
+        }
+      }
+    }
+    
+    // ==================== مساعدة ====================
+    function toast(msg, isError = false) {
+      const toast = document.createElement('div');
+      toast.className = 'toast' + (isError ? ' error' : '');
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2500);
+    }
+    
+    // بدء التطبيق - كشف وضع المسح من الرابط
+    const urlMode = new URLSearchParams(window.location.search).get('mode');
+    if (urlMode === 'scanner') {
+      localStorage.setItem('appMode', 'scanner');
+    }
+    
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+    
+    render();
+  </script>
+  
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script>
+    function generateQRCodes() {
+      document.querySelectorAll('.qr').forEach(el => {
+        if (el.querySelector('img')) return;
+        new QRCode(el, {
+          text: el.dataset.text,
+          width: 100,
+          height: 100
+        });
+      });
+    }
+    
+    function printCodes() {
+      const grid = document.getElementById('codesGrid');
+      const printWindow = window.open('', '_blank');
+      printWindow.document.write(`
+        <html>
+        <head>
+          <title>طباعة الباركودات</title>
+          <style>
+            body { font-family: Arial; direction: rtl; }
+            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+            .item { border: 1px solid #000; padding: 10px; text-align: center; page-break-inside: avoid; }
+            .item img { max-width: 100px; }
+            .code { font-weight: bold; margin-top: 5px; }
+          </style>
+        </head>
+        <body>
+          <div class="grid">${grid.innerHTML}</div>
+          <script>window.print();<\/script>
+        </body>
+        </html>
+      `);
+      printWindow.document.close();
+    }
+  </script>
+</body>
+</html>
