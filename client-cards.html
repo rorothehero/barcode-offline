@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>بطاقات الدعوة</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", Tahoma, sans-serif; background: #111827; color: #fff; min-height: 100vh; direction: rtl; }
+    .page { min-height: 100vh; display: flex; flex-direction: column; }
+    .header-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; background: #1f2937; border-bottom: 1px solid #374151; position: sticky; top: 0; z-index: 50; }
+    .header-bar h1 { font-size: 1.1rem; color: #22c55e; }
+    .content { flex: 1; padding: 15px; }
+    .empty { text-align: center; color: #6b7280; padding: 60px 20px; line-height: 2; }
+    .empty .icon { font-size: 4rem; margin-bottom: 15px; }
+    .import-btn { padding: 10px 20px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
+    .client-select { padding: 15px; border-bottom: 1px solid #374151; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .client-select select { padding: 10px; border: 1px solid #374151; border-radius: 8px; background: #111827; color: #fff; font-size: 0.95rem; flex: 1; min-width: 150px; }
+    .card-wrap { margin-bottom: 20px; text-align: center; background: #1f2937; border-radius: 12px; padding: 15px; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .card-label { font-size: 0.9rem; font-weight: 600; color: #d1d5db; text-align: right; }
+    .card-label .guest-badge { display: inline-block; background: #22c55e; color: #111827; padding: 2px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: 700; margin-right: 8px; }
+    .card-actions { display: flex; gap: 5px; }
+    .card-actions button { width: auto; padding: 6px 14px; border: none; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; color: #fff; }
+    .btn-share { background: #22c55e; }
+    .btn-dl { background: #3b82f6; }
+    .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: #22c55e; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; z-index: 200; animation: toastIn 0.3s ease; }
+    .toast.error { background: #ef4444; }
+    @keyframes toastIn { from { bottom: -50px; opacity: 0; } to { bottom: 30px; opacity: 1; } }
+    canvas { width: 100%; max-width: 320px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; padding: 10px 15px; }
+    .stat-box { background: #1f2937; border-radius: 12px; padding: 12px; text-align: center; }
+    .stat-num { font-size: 1.4rem; font-weight: 700; color: #22c55e; }
+    .stat-label { font-size: 0.75rem; color: #9ca3af; margin-top: 3px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script>
+    let invitations = [];
+    let clients = [];
+    let selectedClient = null;
+
+    function render() {
+      const app = document.getElementById('app');
+      if (invitations.length === 0) {
+        app.innerHTML = `
+          <div class="page">
+            <div class="header-bar"><h1>🎫 بطاقات الدعوة</h1><div></div></div>
+            <div class="empty">
+              <div class="icon">📂</div>
+              <p>استورد ملف البيانات من الإدارة</p>
+              <p style="font-size:0.85rem;color:#9ca3af">ملف JSON الذي صدرته من نظام الباركود</p>
+              <input type="file" id="importFile" accept=".json" onchange="importData(event)" style="display:none">
+              <button class="import-btn" onclick="document.getElementById('importFile').click()" style="margin-top:20px">📤 استيراد بيانات</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      const clientIds = [...new Set(invitations.map(i => i.client_id).filter(Boolean))];
+      if (!selectedClient || !clientIds.includes(selectedClient)) {
+        selectedClient = clientIds[0] || null;
+      }
+
+      const filtered = selectedClient ? invitations.filter(i => i.client_id == selectedClient) : invitations;
+      const total = filtered.length;
+      const used = filtered.reduce((s,i) => s + i.used_count, 0);
+      const rem = filtered.reduce((s,i) => s + Math.max(i.allowed_count - i.used_count, 0), 0);
+      const clientName = filtered[0]?.client_name || 'all';
+
+      app.innerHTML = `
+        <div class="page">
+          <div class="header-bar"><h1>🎫 ${clientName}</h1>
+            <div style="display:flex;gap:5px">
+              <input type="file" id="importFile" accept=".json" onchange="importData(event)" style="display:none">
+              <button class="import-btn" onclick="document.getElementById('importFile').click()">📤</button>
+            </div>
+          </div>
+          ${clientIds.length > 1 ? `
+          <div class="client-select">
+            <select onchange="selectedClient=Number(this.value);render()">
+              ${clientIds.map(cid => {
+                const c = clients.find(cl => cl.id == cid);
+                return `<option value="${cid}" ${cid==selectedClient?'selected':''}>${c?.name || 'بدون اسم'}</option>`;
+              }).join('')}
+            </select>
+          </div>` : ''}
+          <div class="stats">
+            <div class="stat-box"><div class="stat-num">${total}</div><div class="stat-label">البطاقات</div></div>
+            <div class="stat-box"><div class="stat-num">${used}</div><div class="stat-label">دخل</div></div>
+            <div class="stat-box"><div class="stat-num">${rem}</div><div class="stat-label">متبقي</div></div>
+          </div>
+          <div class="content" id="cardsContainer"></div>
+        </div>
+      `;
+
+      const container = document.getElementById('cardsContainer');
+      filtered.forEach(inv => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'card-wrap';
+        const seq = inv.seq_number ? inv.seq_number + '- ' : '';
+        const label = seq + inv.code + (inv.guest_name ? ' 👤 ' + inv.guest_name : '');
+        const guestBadge = '👥 ' + inv.allowed_count;
+        wrapper.innerHTML = `
+          <div class="card-header">
+            <span class="card-label">${label} <span class="guest-badge">${guestBadge}</span></span>
+            <div class="card-actions">
+              <button class="btn-share" onclick="shareCard(${inv.id})">📤</button>
+              <button class="btn-dl" onclick="downloadCard(${inv.id})">⬇️</button>
+            </div>
+          </div>
+          <div class="card-canvas" data-invid="${inv.id}"></div>
+        `;
+        container.appendChild(wrapper);
+        renderCard(inv, wrapper.querySelector('.card-canvas'));
+      });
+    }
+
+    function importData(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          invitations = data.invitations || [];
+          clients = data.clients || [];
+          toast('تم الاستيراد - ' + invitations.length + ' بطاقة');
+          render();
+        } catch(e) { toast('خطأ في الملف', true); }
+      };
+      reader.readAsText(file);
+      event.target.value = '';
+    }
+
+    function codeBarcodeText(inv) {
+      return 'CODE-' + (inv.seq_number ? inv.seq_number + '-' : '') + inv.code + '|ALLOWED-' + inv.allowed_count;
+    }
+
+    function codeDisplayText(inv) {
+      return (inv.seq_number || '') ? inv.seq_number + '- ' + inv.code : inv.code;
+    }
+
+    function getSettings() {
+      try {
+        return {
+          qrColor: localStorage.getItem('cardQrColor') || '#000000',
+          fontFamily: localStorage.getItem('cardFont') || 'Arial',
+          fontColor: localStorage.getItem('cardFontColor') || '#1a1a1a',
+        };
+      } catch(e) {
+        return { qrColor: '#000000', fontFamily: 'Arial', fontColor: '#1a1a1a' };
+      }
+    }
+
+    function renderCard(inv, container) {
+      const settings = getSettings();
+      const qrSize = 200, pad = Math.round(qrSize * 0.1);
+      const fontSize = Math.round(qrSize * 0.08);
+      const hasName = !!inv.guest_name;
+      const W = Math.max(qrSize + pad * 2, 250);
+      const H = pad + qrSize + (hasName ? fontSize * 2 : 0) + fontSize + pad;
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      container.appendChild(canvas);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      const qrX = (W - qrSize) / 2;
+      let qrY = pad;
+      const tmp = document.createElement('div');
+      tmp.style.cssText = 'position:absolute;left:-9999px';
+      document.body.appendChild(tmp);
+      const qrInstance = new QRCode(tmp, {
+        text: codeBarcodeText(inv), width: qrSize, height: qrSize,
+        colorDark: settings.qrColor, colorLight: '#ffffff'
+      });
+      const model = qrInstance._oQRCode || Object.values(qrInstance).find(v => v && typeof v.getModuleCount === 'function');
+      if (model) {
+        const count = model.getModuleCount();
+        const cellSize = qrSize / (count + 8);
+        const margin = Math.round(4 * cellSize);
+        for (let row = 0; row < count; row++)
+          for (let col = 0; col < count; col++)
+            if (model.isDark(row, col)) {
+              ctx.fillStyle = settings.qrColor;
+              ctx.fillRect(qrX + margin + col * cellSize, qrY + margin + row * cellSize, Math.ceil(cellSize), Math.ceil(cellSize));
+            }
+      }
+      document.body.removeChild(tmp);
+      if (inv.guest_name) {
+        ctx.fillStyle = settings.fontColor;
+        ctx.textAlign = 'center';
+        ctx.font = 'bold ' + fontSize + 'px ' + settings.fontFamily;
+        ctx.fillText(inv.guest_name, W/2, qrY - Math.round(fontSize * 0.5));
+      }
+      ctx.fillStyle = settings.fontColor;
+      ctx.textAlign = 'center';
+      ctx.font = 'bold ' + Math.round(fontSize * 0.7) + 'px monospace';
+      ctx.fillText(codeDisplayText(inv), W/2, qrY + qrSize + Math.round(fontSize * 0.8));
+    }
+
+    function getFileName(id) {
+      const inv = invitations.find(i => i.id == id);
+      if (!inv) return 'invite';
+      return (inv.seq_number ? inv.seq_number + '- ' : '') + inv.code;
+    }
+
+    function downloadCard(id) {
+      const canvas = document.querySelector('.card-canvas[data-invid="' + id + '"] canvas');
+      if (!canvas) return;
+      const link = document.createElement('a');
+      link.download = getFileName(id) + '.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      toast('تم التحميل');
+    }
+
+    function shareCard(id) {
+      const canvas = document.querySelector('.card-canvas[data-invid="' + id + '"] canvas');
+      if (!canvas) return;
+      const name = getFileName(id);
+      canvas.toBlob(blob => {
+        if (navigator.share && navigator.canShare({ files: [new File([blob], name + '.png', { type: 'image/png' })] })) {
+          navigator.share({ title: 'بطاقة دعوة', files: [new File([blob], name + '.png', { type: 'image/png' })] }).catch(() => {});
+        } else {
+          const link = document.createElement('a');
+          link.download = name + '.png';
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+          toast('تم التحميل');
+        }
+      });
+    }
+
+    function toast(msg, err) {
+      const t = document.createElement('div');
+      t.className = 'toast' + (err ? ' error' : '');
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 2500);
+    }
+
+    render();
+  </script>
+</body>
+</html>
