@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="theme-color" content="#111827">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>نظام الباركود</title>
   <link rel="manifest" href="manifest.json">
@@ -94,10 +95,10 @@
         if (!inv) {
           return { status: 'INVALID', message: 'كود غير موجود' };
         }
-        if (inv.used_count >= inv.allowed_count) {
+        if (Number(inv.used_count) >= Number(inv.allowed_count)) {
           return { status: 'USED', message: 'تم الاستخدام الكامل', invite: inv };
         }
-        inv.used_count++;
+        inv.used_count = Number(inv.used_count) + 1;
         this.save();
         return { status: 'VALID', message: 'صالح', invite: inv };
       },
@@ -785,7 +786,7 @@
         try {
           await html5QrCode.start(
             { facingMode: "environment" },
-            { fps: 10, qrbox: { width: 320, height: 320 } },
+            { fps: 10, qrbox: { width: 280, height: 280 } },
             onScanSuccess
           );
         } catch (e) {
@@ -794,7 +795,7 @@
             if (cameras.length > 0) {
               await html5QrCode.start(
                 { deviceId: { exact: cameras[0].id } },
-                { fps: 10, qrbox: { width: 320, height: 320 } },
+                { fps: 10, qrbox: { width: 280, height: 280 } },
                 onScanSuccess
               );
             }
@@ -1089,6 +1090,8 @@
     const urlMode = new URLSearchParams(window.location.search).get('mode');
     if (urlMode === 'scanner') {
       localStorage.setItem('appMode', 'scanner');
+    } else if (urlMode === 'admin') {
+      localStorage.setItem('appMode', 'admin');
     }
     
     if ('serviceWorker' in navigator) {
@@ -1122,7 +1125,7 @@
           <style>
             body { font-family: Arial; direction: rtl; }
             .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
-            .item { border: 1px solid #000; padding: 10px; text-align: center; page-break-inside: avoid; }
+            .item { border: 1px solid #000; padding: 10px; text-align: center; page-break-inside: avoid; break-inside: avoid; }
             .item img { max-width: 100px; }
             .code { font-weight: bold; margin-top: 5px; }
           </style>

@@ -33,7 +33,7 @@
     .toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: #22c55e; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; z-index: 200; animation: toastIn 0.3s ease; }
     .toast.error { background: #ef4444; }
     @keyframes toastIn { from { bottom: -50px; opacity: 0; } to { bottom: 30px; opacity: 1; } }
-    #reader { width: 100%; height: calc(100dvh - 60px); border: none; }
+    #reader { width: 100%; max-width: 380px; aspect-ratio: 3/4; margin: 15px auto; border: none; border-radius: 12px; overflow: hidden; background: #000; }
     #reader.flash-green { animation: flashGreen 0.3s ease 3; }
     #reader.flash-red { animation: flashRed 0.3s ease 3; }
     @keyframes flashGreen { 0%,100% { border-color: #22c55e; } 50% { border-color: #374151; } }
@@ -121,11 +121,11 @@
         if (!reader) return;
         html5QrCode = new Html5Qrcode('reader');
         try {
-          await html5QrCode.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 320, height: 320 } }, onScanSuccess);
+          await html5QrCode.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 280, height: 280 } }, onScanSuccess);
         } catch (e) {
           try {
             const cams = await Html5Qrcode.getCameras();
-            if (cams.length) await html5QrCode.start({ deviceId: { exact: cams[0].id } }, { fps: 10, qrbox: { width: 320, height: 320 } }, onScanSuccess);
+            if (cams.length) await html5QrCode.start({ deviceId: { exact: cams[0].id } }, { fps: 10, qrbox: { width: 280, height: 280 } }, onScanSuccess);
           } catch (e2) {
             document.getElementById('reader').innerHTML = `
               <div style="text-align:center;padding:50px;color:#ef4444">
@@ -153,9 +153,9 @@
       const inv = JSON.parse(localStorage.getItem('invitations') || '[]').find(i => i.code.toUpperCase() === code.trim().toUpperCase());
       let status = 'INVALID', msg = 'كود غير موجود', det = '';
       if (inv) {
-        if (inv.used_count >= inv.allowed_count) { status = 'USED'; msg = 'تم الاستخدام الكامل'; det = `(${inv.used_count}/${inv.allowed_count})`; }
+        if (Number(inv.used_count) >= Number(inv.allowed_count)) { status = 'USED'; msg = 'تم الاستخدام الكامل'; det = `(${inv.used_count}/${inv.allowed_count})`; }
         else {
-          inv.used_count++;
+          inv.used_count = Number(inv.used_count) + 1;
           const all = JSON.parse(localStorage.getItem('invitations') || '[]');
           const idx = all.findIndex(i => i.id === inv.id);
           if (idx >= 0) { all[idx] = inv; localStorage.setItem('invitations', JSON.stringify(all)); }
