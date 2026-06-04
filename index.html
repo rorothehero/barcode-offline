@@ -966,9 +966,8 @@
             
             <div class="card" style="border:2px solid #3b82f6">
               <h3>🔀 وضع المسح</h3>
-              <p>ارسل الرابط للماسح أو حمّل له ملف <code>scan.html</code></p>
+              <p>افتح <code>scan.html</code> للمسح بدون إدارة</p>
               <input type="text" readonly value="${window.location.origin + window.location.pathname.replace('index.html','')}scan.html" style="text-align:center;font-size:0.85rem;padding:10px;margin:5px 0" onclick="this.select();navigator.clipboard?.writeText(this.value);toast('تم النسخ')">
-              <button class="action-btn" onclick="toggleMode()" style="background:#3b82f6">📷 وضع المسح</button>
             </div>
             
             <div class="info-box">
@@ -1056,25 +1055,9 @@
       navigate('export');
     }
     
-    // ==================== وضع المسح (Scanner Mode) ====================
+    // ==================== وضع المسح ====================
     function isAdmin() {
-      return localStorage.getItem('appMode') !== 'scanner';
-    }
-    
-    function toggleMode() {
-      if (isAdmin()) {
-        if (confirm('التبديل إلى وضع المسح؟ سيتم إخفاء قوائم الإدارة.')) {
-          localStorage.setItem('appMode', 'scanner');
-          toast('وضع المسح');
-          render();
-        }
-      } else {
-        if (confirm('العودة إلى وضع الإدارة؟')) {
-          localStorage.setItem('appMode', 'admin');
-          toast('وضع الإدارة');
-          render();
-        }
-      }
+      return new URLSearchParams(window.location.search).get('mode') !== 'scanner';
     }
     
     // ==================== مساعدة ====================
@@ -1086,13 +1069,7 @@
       setTimeout(() => toast.remove(), 2500);
     }
     
-    // بدء التطبيق - كشف وضع المسح من الرابط
-    const urlMode = new URLSearchParams(window.location.search).get('mode');
-    if (urlMode === 'scanner') {
-      localStorage.setItem('appMode', 'scanner');
-    } else if (urlMode === 'admin') {
-      localStorage.setItem('appMode', 'admin');
-    }
+    // بدء التطبيق
     
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('sw.js');
