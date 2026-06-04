@@ -153,6 +153,7 @@
     
     // ==================== نظام التوجيه ====================
     let currentPage = 'home';
+    let currentInvId = null;
     
     function navigate(page) {
       if (!isAdmin() && ['clients','addClient','generate'].includes(page)) {
@@ -198,7 +199,7 @@
               </div>
               <div class="stat-box">
                 <div class="stat-num">${totalGuests}</div>
-                <div class="stat-label">المدعوون</div>
+                <div class="stat-label">المدعوين</div>
               </div>
               <div class="stat-box">
                 <div class="stat-num">${totalUsed}</div>
@@ -349,7 +350,9 @@
               </button>
             </div>
             
-            <p style="margin: 15px 0 5px">📦 الأكواد: ${stats.required_codes || stats.qr_count} | 👥 المدعوون: ${stats.total_guests} | 🚪 دخل: ${stats.used_total} | 📊 متبقي: ${stats.remaining_guests}</p>
+            <p style="margin: 15px 0 5px">📦 الأكواد: ${stats.required_codes || stats.qr_count} | 👥 المدعوين: ${stats.total_guests} | 🚪 دخل: ${stats.used_total} | 📊 متبقي: ${stats.remaining_guests}</p>
+            <button class="action-btn" onclick="showAllInviteCards(${id})" style="background:#8b5cf6">👁️ استعراض ملف العميل</button>
+            <button class="action-btn" onclick="downloadClientFile(${id})" style="background:#f59e0b">📤 إرسال ملف العميل</button>
             <h3 style="margin: 20px 0 10px">الأكواد (${stats.qr_count})</h3>
             ${renderClientInvitations(id)}
           </div>
@@ -364,7 +367,7 @@
       return invs.map((inv, idx) => `
         <div class="inv-item">
           <div class="inv-info">
-            <div class="inv-code">${codeDisplayText(inv, idx + 1)}</div>
+            <div class="inv-code"><span class="guest-badge-sm">👥 ${inv.allowed_count}</span> ${codeDisplayText(inv, idx + 1)}</div>
             <div class="inv-meta">
               ${inv.guest_name ? `<span style="color:#22c55e">👤 ${inv.guest_name}</span>` : ''}
               <span>(${inv.used_count}/${inv.allowed_count})</span>
@@ -593,13 +596,18 @@
     function showInviteCard(id) {
       const inv = DB.invitations.find(i => i.id == id);
       if (!inv) return;
+      currentInvId = id;
       
       document.getElementById('app').innerHTML = `
         <div class="page">
           <div class="header-bar">
             <button class="back-btn" onclick="showClientMenu(${inv.client_id})">←</button>
             <h1>🎫 بطاقة دعوة</h1>
-            <button class="icon-btn" onclick="printInviteCard()">🖨️</button>
+            <div style="display:flex;gap:5px">
+              <button class="icon-btn" onclick="shareInviteCard()" title="مشاركة">📤</button>
+              <button class="icon-btn" onclick="downloadInviteCard()" title="تحميل">⬇️</button>
+              <button class="icon-btn" onclick="printInviteCard()" title="طباعة">🖨️</button>
+            </div>
           </div>
           
           <div class="content" id="inviteCardContent">
@@ -616,6 +624,140 @@
       renderCardCanvas(inv);
     }
     
+    function showAllInviteCards(clientId) {
+      const invs = DB.invitations.filter(i => i.client_id == clientId);
+      const client = DB.clients.find(c => c.id == clientId);
+      document.getElementById('app').innerHTML = `
+        <div class="page">
+          <div class="header-bar">
+            <button class="back-btn" onclick="showClientMenu(${clientId})">←</button>
+            <h1>🎫 بطاقات ${client?.name || ''}</h1>
+            <div></div>
+          </div>
+          <div class="content" id="allCardsContainer"></div>
+        </div>
+      `;
+      const container = document.getElementById('allCardsContainer');
+      invs.forEach((inv, idx) => {
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'margin-bottom:25px;text-align:center';
+        wrapper.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-weight:600">${codeDisplayText(inv, idx+1)}${inv.guest_name ? ` - 👤 ${inv.guest_name}` : ''}</span>
+            <div style="display:flex;gap:5px">
+              <button class="sm-btn" onclick="shareCardImage(${inv.id})" style="background:#22c55e">📤</button>
+              <button class="sm-btn" onclick="downloadCardImage(${inv.id})" style="background:#3b82f6">⬇️</button>
+            </div>
+          </div>
+          <div class="card-canvas-wrapper" data-invid="${inv.id}"></div>
+        `;
+        container.appendChild(wrapper);
+        renderMiniCard(inv, wrapper.querySelector('.card-canvas-wrapper'));
+      });
+    }
+
+    function renderMiniCard(inv, container) {
+      const settings = getCardSettings();
+      const hasBg = !!localStorage.getItem('cardImage');
+      const qrSize = hasBg ? 200 : 200;
+      const pad = Math.round(qrSize * 0.1);
+      const fontSize = Math.round(qrSize * 0.08);
+      const hasName = !!inv.guest_name;
+      const W = hasBg ? 400 : Math.max(qrSize + pad * 2, 250);
+      const H = hasBg ? 600 : pad + qrSize + (hasName ? fontSize * 2 : 0) + fontSize + pad;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = '100%';
+      canvas.style.maxWidth = '350px';
+      canvas.style.borderRadius = '12px';
+      canvas.style.boxShadow = '0 4px 20px rgba(0,0,0,0.3)';
+      container.appendChild(canvas);
+
+      const ctx = canvas.getContext('2d');
+      const bgSrc = localStorage.getItem('cardImage');
+
+      function draw(bgImg) {
+        if (bgImg) ctx.drawImage(bgImg, 0, 0, W, H);
+        else { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H); }
+
+        const qrX = (W - qrSize) / 2;
+        let qrY;
+        const tmp = document.createElement('div');
+        tmp.style.cssText = 'position:absolute;left:-9999px';
+        document.body.appendChild(tmp);
+        const qrInstance = new QRCode(tmp, {
+          text: codeBarcodeText(inv), width: qrSize, height: qrSize,
+          colorDark: settings.qrColor, colorLight: '#ffffff'
+        });
+        const model = qrInstance._oQRCode || Object.values(qrInstance).find(v => v && typeof v.getModuleCount === 'function');
+        if (model) {
+          const count = model.getModuleCount();
+          const cellSize = qrSize / (count + 8);
+          const margin = Math.round(4 * cellSize);
+          qrY = hasBg ? Math.round(H * 0.75 - qrSize / 2) : pad;
+          for (let row = 0; row < count; row++)
+            for (let col = 0; col < count; col++)
+              if (model.isDark(row, col)) {
+                ctx.fillStyle = settings.qrColor;
+                ctx.fillRect(qrX + margin + col * cellSize, qrY + margin + row * cellSize, Math.ceil(cellSize), Math.ceil(cellSize));
+              }
+        }
+        document.body.removeChild(tmp);
+
+        if (inv.guest_name) {
+          ctx.fillStyle = settings.fontColor;
+          ctx.textAlign = 'center';
+          ctx.font = `bold ${fontSize}px ${settings.fontFamily}`;
+          ctx.fillText(inv.guest_name, W/2, qrY - Math.round(fontSize * 0.5));
+        }
+        ctx.fillStyle = settings.fontColor;
+        ctx.textAlign = 'center';
+        ctx.font = `bold ${Math.round(fontSize * 0.7)}px monospace`;
+        ctx.fillText(codeDisplayText(inv), W/2, qrY + qrSize + Math.round(fontSize * 0.8));
+      }
+
+      if (bgSrc) {
+        const img = new Image();
+        img.onload = () => draw(img);
+        img.onerror = () => draw(null);
+        img.src = bgSrc;
+      } else { draw(null); }
+    }
+
+    function downloadCardImage(id) {
+      const canvas = document.querySelector(`.card-canvas-wrapper[data-invid="${id}"] canvas`);
+      if (!canvas) return;
+      const link = document.createElement('a');
+      link.download = getCodeFileName(id) + '.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      toast('تم التحميل');
+    }
+
+    function shareCardImage(id) {
+      const canvas = document.querySelector(`.card-canvas-wrapper[data-invid="${id}"] canvas`);
+      if (!canvas) return;
+      const name = getCodeFileName(id);
+      canvas.toBlob(blob => {
+        if (navigator.share && navigator.canShare({ files: [new File([blob], name + '.png', { type: 'image/png' })] })) {
+          navigator.share({ title: 'بطاقة دعوة', files: [new File([blob], name + '.png', { type: 'image/png' })] }).catch(() => {});
+        } else {
+          const link = document.createElement('a');
+          link.download = name + '.png';
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+          toast('تم التحميل');
+        }
+      });
+    }
+
+    function copyClientLink(id) {
+      const url = window.location.origin + window.location.pathname.replace('index.html','') + 'client-cards.html';
+      navigator.clipboard?.writeText(url);
+      toast('تم النسخ - أرسل الرابط للعميل');
+    }
+
     function saveGuestName(id) {
       const name = document.getElementById('guestNameInput').value.trim();
       DB.updateInvitation(id, { guest_name: name });
@@ -629,9 +771,20 @@
       if (!container) return;
       
       const settings = getCardSettings();
+      const hasBg = !!localStorage.getItem('cardImage');
       const isMobile = window.innerWidth < 500;
-      const W = isMobile ? 400 : 800;
-      const H = Math.round(W * 1.5);
+      const qrSize = hasBg ? Math.round((hasBg ? (isMobile ? 400 : 800) : 250) * 0.5) : 200;
+      const pad = Math.round(qrSize * 0.1);
+      const fontSize = hasBg ? Math.round(400 * 0.05) : Math.round(qrSize * 0.08);
+      let W, H;
+      if (hasBg) {
+        W = isMobile ? 400 : 800;
+        H = Math.round(W * 1.5);
+      } else {
+        const hasName = !!inv.guest_name;
+        H = pad + qrSize + (hasName ? fontSize * 2 : 0) + fontSize + pad;
+        W = qrSize + pad * 2;
+      }
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
@@ -654,10 +807,8 @@
           ctx.fillRect(0, 0, W, H);
         }
         
-        const qrSize = Math.round(W * 0.5);
         const qrX = (W - qrSize) / 2;
-        const qrY = Math.round(H * 0.75 - qrSize / 2);
-        
+        let qrY;
         const tmp = document.createElement('div');
         tmp.style.cssText = 'position:absolute;left:-9999px';
         document.body.appendChild(tmp);
@@ -674,6 +825,11 @@
           const count = model.getModuleCount();
           const cellSize = qrSize / (count + 8);
           const margin = Math.round(4 * cellSize);
+          if (hasBg) {
+            qrY = Math.round(H * 0.75 - qrSize / 2);
+          } else {
+            qrY = pad;
+          }
           for (let row = 0; row < count; row++) {
             for (let col = 0; col < count; col++) {
               if (model.isDark(row, col)) {
@@ -685,18 +841,17 @@
         }
         document.body.removeChild(tmp);
         
-        const fontSize = Math.round(W * 0.05);
         if (inv.guest_name) {
           ctx.fillStyle = settings.fontColor;
           ctx.textAlign = 'center';
           ctx.font = `bold ${fontSize}px ${settings.fontFamily}`;
           ctx.fillText(inv.guest_name, W/2, qrY - Math.round(fontSize * 0.5));
         }
-        
         ctx.fillStyle = settings.fontColor;
         ctx.textAlign = 'center';
         ctx.font = `bold ${Math.round(fontSize * 0.7)}px monospace`;
-        ctx.fillText(codeDisplayText(inv), W/2, qrY + qrSize + Math.round(fontSize * 0.6));
+        const textY = qrY + qrSize + (hasBg ? Math.round(fontSize * 0.6) : Math.round(fontSize * 0.8));
+        ctx.fillText(codeDisplayText(inv), W/2, textY);
       }
       
       if (bgSrc) {
@@ -709,6 +864,78 @@
       }
     }
     
+    function downloadClientFile(clientId) {
+      const client = DB.clients.find(c => c.id == clientId);
+      const invs = DB.invitations.filter(i => i.client_id == clientId);
+      const settings = getCardSettings();
+      toast('جاري تجهيز البطاقات...');
+      const cards = invs.map(inv => {
+        const qrSize=200,pad=Math.round(qrSize*0.1),fontSize=Math.round(qrSize*0.08);
+        const hasName=!!inv.guest_name;
+        const W=Math.max(qrSize+pad*2,250),H=pad+qrSize+(hasName?fontSize*2:0)+fontSize+pad;
+        const canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;
+        const ctx=canvas.getContext('2d');
+        ctx.fillStyle='#ffffff';ctx.fillRect(0,0,W,H);
+        const qrX=(W-qrSize)/2,qrY=pad;
+        const tmp=document.createElement('div');tmp.style.cssText='position:absolute;left:-9999px';
+        document.body.appendChild(tmp);
+        const qi=new QRCode(tmp,{text:codeBarcodeText(inv),width:qrSize,height:qrSize,colorDark:settings.qrColor,colorLight:'#ffffff'});
+        const m=qi._oQRCode||Object.values(qi).find(v=>v&&typeof v.getModuleCount==='function');
+        if(m){const cnt=m.getModuleCount(),cs=qrSize/(cnt+8),mg=Math.round(4*cs);for(let r=0;r<cnt;r++)for(let c=0;c<cnt;c++)if(m.isDark(r,c)){ctx.fillStyle=settings.qrColor;ctx.fillRect(qrX+mg+c*cs,qrY+mg+r*cs,Math.ceil(cs),Math.ceil(cs));}}
+        document.body.removeChild(tmp);
+        if(inv.guest_name){ctx.fillStyle=settings.fontColor;ctx.textAlign='center';ctx.font='bold '+fontSize+'px '+settings.fontFamily;ctx.fillText(inv.guest_name,W/2,qrY-Math.round(fontSize*0.5));}
+        ctx.fillStyle=settings.fontColor;ctx.textAlign='center';ctx.font='bold '+Math.round(fontSize*0.7)+'px monospace';
+        ctx.fillText(codeDisplayText(inv),W/2,qrY+qrSize+Math.round(fontSize*0.8));
+        const seq=inv.seq_number?inv.seq_number+'- ':'';
+        return {id:inv.id,label:seq+inv.code+(inv.guest_name?' 👤 '+inv.guest_name:''),dataUrl:canvas.toDataURL('image/png'),allowed:inv.allowed_count||0};
+      });
+      const total=cards.length,guests=cards.reduce((s,c)=>s+c.allowed,0);
+      const html='<!DOCTYPE html>\n<html lang="ar" dir="rtl">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width,initial-scale=1.0">\n<title>بطاقات '+(client?.name||'العميل')+'</title>\n<style>\n*{box-sizing:border-box;margin:0;padding:0}\nbody{font-family:"Segoe UI",Tahoma,sans-serif;background:#111827;color:#fff;min-height:100vh;direction:rtl;padding-bottom:30px}\n.header-bar{text-align:center;padding:15px;background:#1f2937;border-bottom:1px solid #374151}\n.header-bar h1{font-size:1.2rem;color:#22c55e}\n.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:10px 15px}\n.stat-box{background:#1f2937;border-radius:12px;padding:12px;text-align:center}\n.stat-num{font-size:1.4rem;font-weight:700;color:#22c55e}\n.stat-label{font-size:0.75rem;color:#9ca3af;margin-top:3px}\n.card-wrap{margin:15px;padding:15px;background:#1f2937;border-radius:12px;text-align:center}\n.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px}\n.card-label{font-size:0.9rem;font-weight:600;color:#d1d5db}\n.card-actions{display:flex;gap:5px}\n.card-actions button{width:auto;padding:6px 14px;border:none;border-radius:6px;font-size:0.85rem;font-weight:600;cursor:pointer;color:#fff}\n.btn-share{background:#22c55e}\n.btn-dl{background:#3b82f6}\n.guest-badge{display:inline-block;background:#22c55e;color:#111827;padding:2px 10px;border-radius:12px;font-size:0.8rem;font-weight:700}\n.card-img{width:100%;max-width:320px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.3);display:block;margin:0 auto}\n@media print{body{background:#fff;color:#000;padding:0}.header-bar,.stats{display:none}.card-wrap{break-inside:avoid;background:#fff;margin:10px 0;padding:10px}.card-label{color:#333}.guest-badge{background:#22c55e;color:#111}}\n</style>\n</head>\n<body>\n<div class="header-bar"><h1>🎫 بطاقات '+(client?.name||'العميل')+'</h1></div>\n<div class="stats"><div class="stat-box"><div class="stat-num">'+total+'</div><div class="stat-label">البطاقات</div></div><div class="stat-box"><div class="stat-num">'+guests+'</div><div class="stat-label">المدعوين</div></div></div>\n'+cards.map(c=>'\n<div class="card-wrap">\n<div class="card-header">\n<span class="card-label">'+c.label+' <span class="guest-badge">👥 '+c.allowed+'</span></span>\n<div class="card-actions"><button class="btn-share" onclick="shareCard('+c.id+')">📤</button><button class="btn-dl" onclick="downloadCard('+c.id+')">⬇️</button></div>\n</div>\n<img class="card-img" id="img_'+c.id+'" src="'+c.dataUrl+'" alt="'+c.label+'">\n</div>').join('')+'\n<script>\nfunction dl(id){var img=document.getElementById("img_"+id);if(!img)return;var a=document.createElement("a");a.download=img.getAttribute("alt")+".png";a.href=img.src;a.click();}\nfunction sh(id){var img=document.getElementById("img_"+id);if(!img)return;fetch(img.src).then(function(r){return r.blob();}).then(function(b){var f=new File([b],img.getAttribute("alt")+".png",{type:"image/png"});if(navigator.share&&navigator.canShare({files:[f]})){navigator.share({title:"بطاقة دعوة",files:[f]}).catch(function(){});}else{dl(id);}}).catch(function(){dl(id);});}\nfunction downloadCard(id){dl(id);}\nfunction shareCard(id){sh(id);}\n</scr'+'ipt>\n</body>\n</html>';
+      const blob=new Blob([html],{type:'text/html'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download=(client?.name||'client')+'-cards.html';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('تم إنشاء ملف العميل');
+    }
+
+    function getCodeFileName(id) {
+      const inv = DB.invitations.find(i => i.id == id);
+      if (!inv) return 'invite';
+      const seq = inv.seq_number ? `${inv.seq_number}-` : '';
+      return `${seq}${inv.code}`;
+    }
+
+    function downloadInviteCard() {
+      const canvas = document.querySelector('#inviteCard canvas');
+      if (!canvas || !currentInvId) return;
+      const link = document.createElement('a');
+      link.download = getCodeFileName(currentInvId) + '.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      toast('تم التحميل');
+    }
+
+    function shareInviteCard() {
+      const canvas = document.querySelector('#inviteCard canvas');
+      if (!canvas || !currentInvId) return;
+      const name = getCodeFileName(currentInvId);
+      canvas.toBlob(blob => {
+        if (navigator.share && navigator.canShare({ files: [new File([blob], name + '.png', { type: 'image/png' })] })) {
+          navigator.share({
+            title: 'بطاقة دعوة',
+            files: [new File([blob], name + '.png', { type: 'image/png' })]
+          }).catch(() => {});
+        } else {
+          const link = document.createElement('a');
+          link.download = name + '.png';
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+          toast('تم التحميل');
+        }
+      });
+    }
+
     function printInviteCard() {
       const canvas = document.querySelector('#inviteCard canvas');
       if (!canvas) return;
@@ -969,6 +1196,8 @@
               <p>افتح <code>scan.html</code> للمسح بدون إدارة</p>
               <input type="text" readonly value="${window.location.origin + window.location.pathname.replace('index.html','')}scan.html" style="text-align:center;font-size:0.85rem;padding:10px;margin:5px 0" onclick="this.select();navigator.clipboard?.writeText(this.value);toast('تم النسخ')">
             </div>
+            
+
             
             <div class="info-box">
               <p>📊 إحصائيات:</p>

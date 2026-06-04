@@ -274,6 +274,18 @@ select {
   cursor: pointer;
 }
 
+.guest-badge-sm {
+  display: inline-block;
+  background: #22c55e;
+  color: #111827;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 /* === الشيبس === */
 .chip {
   display: inline-block;
